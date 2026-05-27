@@ -10,6 +10,14 @@ No hermes-agent source files are modified. The patch uses a Python `MetaPathFind
 
 ## Install
 
+**One-liner:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iceteaSA/hermes-max-oauth/main/install-remote.sh | bash
+```
+
+**Or clone and install manually:**
+
 ```bash
 git clone https://github.com/iceteaSA/hermes-max-oauth.git
 cd hermes-max-oauth
@@ -90,7 +98,7 @@ Override location with `HERMES_MAX_CONFIG` env var.
 pytest tests/ -v
 ```
 
-65 tests across 5 files covering cch signing, identity headers, prompt sanitization, integration pipeline, and the runtime patcher.
+72 tests across 5 files covering cch signing, identity headers, prompt sanitization, integration pipeline, and the runtime patcher.
 
 ## Known constraints
 

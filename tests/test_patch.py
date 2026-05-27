@@ -99,8 +99,8 @@ class TestPatchBuildKwargs:
         result = mock_adapter.build_anthropic_kwargs(
             'claude-sonnet-4-6', [], is_oauth=True,
         )
-        assert result['tools'][0]['name'] == 'mcp_read_file'
-        assert result['tools'][1]['name'] == 'mcp_terminal'
+        assert result['tools'][0]['name'] == 'mcp_ReadFile'
+        assert result['tools'][1]['name'] == 'mcp_Terminal'
 
     def test_oauth_skips_already_prefixed_tools(self, mock_adapter):
         from hermes_max_patch import _patch_build_kwargs
@@ -117,7 +117,18 @@ class TestPatchBuildKwargs:
         result = mock_adapter.build_anthropic_kwargs(
             'claude-sonnet-4-6', [], is_oauth=True,
         )
-        assert result['tools'][0]['name'] == 'mcp_read_file'  # not double-prefixed
+        assert result['tools'][0]['name'] == 'mcp_read_file'  # already prefixed, untouched
+
+    def test_to_pascal_case(self, mock_adapter):
+        from hermes_max_patch import _to_pascal_case
+
+        assert _to_pascal_case('read_file') == 'ReadFile'
+        assert _to_pascal_case('terminal') == 'Terminal'
+        assert _to_pascal_case('bash') == 'Bash'
+        assert _to_pascal_case('todo_write') == 'TodoWrite'
+        assert _to_pascal_case('web_search') == 'WebSearch'
+        assert _to_pascal_case('') == ''
+        assert _to_pascal_case('Read') == 'Read'  # already PascalCase
 
     def test_oauth_sanitizes_hermes_references(self, mock_adapter):
         from hermes_max_patch import _patch_build_kwargs
@@ -136,6 +147,109 @@ class TestPatchBuildKwargs:
         full_text = ' '.join(b['text'] for b in result['system'])
         assert 'Hermes Agent' not in full_text
         assert 'Nous Research' not in full_text
+
+
+class TestFromPascalCase:
+    """Test PascalCase → snake_case conversion for response unwrapping."""
+
+    def test_basic_conversions(self):
+        from hermes_max_patch import _from_pascal_case
+
+        assert _from_pascal_case('ReadFile') == 'read_file'
+        assert _from_pascal_case('Terminal') == 'terminal'
+        assert _from_pascal_case('Bash') == 'bash'
+        assert _from_pascal_case('TodoWrite') == 'todo_write'
+        assert _from_pascal_case('WebSearch') == 'web_search'
+
+    def test_already_snake_case(self):
+        from hermes_max_patch import _from_pascal_case
+
+        assert _from_pascal_case('read_file') == 'read_file'
+        assert _from_pascal_case('terminal') == 'terminal'
+
+    def test_empty_string(self):
+        from hermes_max_patch import _from_pascal_case
+
+        assert _from_pascal_case('') == ''
+
+    def test_round_trip(self):
+        """PascalCase → snake_case should reverse snake_case → PascalCase."""
+        from hermes_max_patch import _to_pascal_case, _from_pascal_case
+
+        names = ['read_file', 'terminal', 'bash', 'todo_write', 'web_search']
+        for name in names:
+            assert _from_pascal_case(_to_pascal_case(name)) == name
+
+
+class TestNormalizeResponsePatch:
+    """Test that normalize_response unwraps PascalCase tool names."""
+
+    def test_unwraps_pascal_case_when_strip_prefix(self):
+        from hermes_max_patch import _from_pascal_case, _patch_normalize_response
+        from unittest.mock import MagicMock, patch
+        from types import SimpleNamespace
+
+        # Mock ToolCall with mutable name
+        class MockToolCall:
+            def __init__(self, name):
+                self.name = name
+
+        # Mock NormalizedResponse
+        mock_result = SimpleNamespace(
+            tool_calls=[MockToolCall('ReadFile'), MockToolCall('Terminal')],
+        )
+
+        # Mock AnthropicTransport class
+        mock_transport_cls = MagicMock()
+        mock_transport_cls.normalize_response = MagicMock(return_value=mock_result)
+        original_normalize = mock_transport_cls.normalize_response
+
+        with patch.dict('sys.modules', {
+            'agent': MagicMock(),
+            'agent.transports': MagicMock(),
+            'agent.transports.anthropic': MagicMock(
+                AnthropicTransport=mock_transport_cls,
+            ),
+        }):
+            _patch_normalize_response()
+
+        # Call the patched method with strip_tool_prefix=True
+        result = mock_transport_cls.normalize_response(
+            MagicMock(), MagicMock(), strip_tool_prefix=True,
+        )
+        assert result.tool_calls[0].name == 'read_file'
+        assert result.tool_calls[1].name == 'terminal'
+
+    def test_no_unwrap_without_strip_prefix(self):
+        from hermes_max_patch import _patch_normalize_response
+        from unittest.mock import MagicMock, patch
+        from types import SimpleNamespace
+
+        class MockToolCall:
+            def __init__(self, name):
+                self.name = name
+
+        mock_result = SimpleNamespace(
+            tool_calls=[MockToolCall('mcp_ReadFile')],
+        )
+
+        mock_transport_cls = MagicMock()
+        mock_transport_cls.normalize_response = MagicMock(return_value=mock_result)
+
+        with patch.dict('sys.modules', {
+            'agent': MagicMock(),
+            'agent.transports': MagicMock(),
+            'agent.transports.anthropic': MagicMock(
+                AnthropicTransport=mock_transport_cls,
+            ),
+        }):
+            _patch_normalize_response()
+
+        # Call without strip_tool_prefix — names should stay as-is
+        result = mock_transport_cls.normalize_response(
+            MagicMock(), MagicMock(),
+        )
+        assert result.tool_calls[0].name == 'mcp_ReadFile'
 
 
 class TestPatchBuildClient:

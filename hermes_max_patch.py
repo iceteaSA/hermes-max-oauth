@@ -4,11 +4,13 @@ Hermes Max OAuth runtime patcher.
 Monkey-patches agent.anthropic_adapter to route OAuth requests through
 the Max subscription base allowance instead of extra usage credits.
 
-Patches two functions:
+Patches three functions:
 1. build_anthropic_client() — adds httpx event hook for cch signing,
    identity headers, body ordering, and metadata injection.
 2. build_anthropic_kwargs() — replaces system prompt with 3-block layout
    (billing header, identity prefix, sanitized body) for Max routing.
+3. AnthropicTransport.normalize_response() — unwraps PascalCase tool names
+   back to snake_case so hermes's tool dispatcher resolves them correctly.
 
 Applied automatically via hermes-max-oauth.pth at Python startup.
 Does NOT modify any hermes-agent source files.
@@ -24,6 +26,29 @@ logger = logging.getLogger(__name__)
 
 _PATCHED = False
 _MCP_TOOL_PREFIX = 'mcp_'
+
+
+def _to_pascal_case(name: str) -> str:
+    """Convert snake_case tool name to PascalCase.
+
+    Claude Code uses PascalCase tool names (e.g. mcp_Bash, mcp_Read).
+    Lowercase names (mcp_bash, mcp_read) are flagged as non-Claude-Code.
+    """
+    return ''.join(part.capitalize() for part in name.split('_') if part)
+
+
+def _from_pascal_case(name: str) -> str:
+    """Convert PascalCase back to snake_case for response unwrapping.
+
+    Reverses _to_pascal_case: ReadFile → read_file, Terminal → terminal.
+    Used when Claude returns tool names we PascalCased on the outbound side.
+    """
+    import re
+    # Insert underscore before each uppercase letter that follows a lowercase
+    # letter or is followed by a lowercase letter (handles acronyms).
+    s = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name)
+    s = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', s)
+    return s.lower()
 
 
 def _patch_build_client(adapter):
@@ -194,13 +219,15 @@ def _patch_build_kwargs(adapter):
 
         result['system'] = build_system_blocks(raw, _billing, _config)
 
-        # ── Prefix tool names with mcp_ ───────────────────────────
+        # ── Prefix tool names with mcp_ + PascalCase ─────────────
         if result.get('tools'):
             for tool in result['tools']:
                 if 'name' in tool and not tool['name'].startswith(
                     _MCP_TOOL_PREFIX
                 ):
-                    tool['name'] = _MCP_TOOL_PREFIX + tool['name']
+                    tool['name'] = (
+                        _MCP_TOOL_PREFIX + _to_pascal_case(tool['name'])
+                    )
 
         # ── Prefix tool names in message history ──────────────────
         for msg in result.get('messages', []):
@@ -214,11 +241,41 @@ def _patch_build_kwargs(adapter):
                         and 'name' in block
                         and not block['name'].startswith(_MCP_TOOL_PREFIX)
                     ):
-                        block['name'] = _MCP_TOOL_PREFIX + block['name']
+                        block['name'] = (
+                            _MCP_TOOL_PREFIX
+                            + _to_pascal_case(block['name'])
+                        )
 
         return result
 
     adapter.build_anthropic_kwargs = _patched
+
+
+def _patch_normalize_response():
+    """Wrap AnthropicTransport.normalize_response to unwrap PascalCase tool names.
+
+    When strip_tool_prefix=True (OAuth mode), hermes strips the mcp_ prefix
+    but leaves PascalCase intact (e.g. ReadFile). We added PascalCase on the
+    outbound side, so we must reverse it: ReadFile → read_file.
+    """
+    try:
+        from agent.transports.anthropic import AnthropicTransport
+    except ImportError:
+        logger.debug('hermes-max-oauth: AnthropicTransport not found, '
+                      'skipping response unwrap patch')
+        return
+
+    _original = AnthropicTransport.normalize_response
+
+    @functools.wraps(_original)
+    def _patched(self, response, **kwargs):
+        result = _original(self, response, **kwargs)
+        if kwargs.get('strip_tool_prefix', False) and result.tool_calls:
+            for tc in result.tool_calls:
+                tc.name = _from_pascal_case(tc.name)
+        return result
+
+    AnthropicTransport.normalize_response = _patched
 
 
 def apply_patches(adapter=None):
@@ -232,6 +289,7 @@ def apply_patches(adapter=None):
             import agent.anthropic_adapter as adapter
         _patch_build_client(adapter)
         _patch_build_kwargs(adapter)
+        _patch_normalize_response()
         _PATCHED = True
         logger.debug('hermes-max-oauth: patches applied')
     except Exception:

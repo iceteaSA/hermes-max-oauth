@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_DIR="$SCRIPT_DIR"
 
 # ── Detect hermes-agent directory ──────────────────────────────────
 HERMES_DIR="${1:-}"
