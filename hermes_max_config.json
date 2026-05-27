@@ -1,0 +1,12 @@
+{
+  "sanitize": {
+    "replacements": [
+      { "from": "Hermes Agent", "to": "Hades Agent" },
+      { "from": "Hermes agent", "to": "Hades Agent" },
+      { "from": "hermes-agent", "to": "hades-agent" },
+      { "from": "hermes agent", "to": "hades agent" },
+      { "from": "Nous Research", "to": "Anthropic" }
+    ],
+    "rewrite_patterns": []
+  }
+}
