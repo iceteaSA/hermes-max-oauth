@@ -60,6 +60,13 @@ CLAUDE_CODE_BASE_BETAS = [
     'cache-diagnosis-2026-04-07',
 ]
 
+# Betas that must NEVER be sent on the Max base allowance. context-1m triggers
+# "Usage credits are required for long context requests." Filtered out of the
+# final header regardless of how it was introduced (incoming/extra betas).
+EXCLUDED_BETAS = frozenset({
+    'context-1m-2025-08-07',
+})
+
 # --- Body field ordering ---
 
 BODY_FIELD_ORDER = [
@@ -121,7 +128,9 @@ def select_betas(
             if trimmed:
                 selected.append(trimmed)
 
-    return ','.join(dict.fromkeys(selected))  # deduplicate, preserve order
+    # Deduplicate (preserve order), then drop any denied betas.
+    deduped = dict.fromkeys(selected)
+    return ','.join(b for b in deduped if b not in EXCLUDED_BETAS)
 
 
 def stainless_os() -> str:

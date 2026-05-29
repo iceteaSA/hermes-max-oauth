@@ -42,6 +42,22 @@ class TestSignRequestBody:
         assert match is not None
         assert match.group(1) != '00000'
 
+    def test_idempotent_across_retries(self):
+        # Re-signing an already-signed body (SDK retry) must produce the
+        # same token, because hashing always runs over the placeholder.
+        body = '{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.141.67b; cc_entrypoint=sdk-cli; cch=00000;"}]}'
+        once = sign_request_body(body)
+        twice = sign_request_body(once)
+        assert once == twice
+
+    def test_resign_matches_fresh_sign(self):
+        # Signing a body whose placeholder was pre-filled with a junk hash
+        # yields the same result as signing the clean placeholder body.
+        body = '{"x":"cch=00000;"}'
+        fresh = sign_request_body(body)
+        prefilled = sign_request_body(body.replace('cch=00000;', 'cch=abcde;'))
+        assert fresh == prefilled
+
 
 class TestComputeVersionSuffix:
     def test_pinned_version_returns_build_hash(self):

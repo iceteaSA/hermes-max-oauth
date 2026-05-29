@@ -69,6 +69,25 @@ class TestSelectBetas:
         assert 'structured-outputs-2025-12-15' in result
         assert 'claude-code-20250219' not in result
 
+    def test_excluded_beta_filtered_from_extra(self):
+        # context-1m introduced via extra_betas must be denied, not merged in.
+        result = select_betas(None, extra_betas=['context-1m-2025-08-07'])
+        assert 'context-1m-2025-08-07' not in result
+        # other betas still present
+        assert 'oauth-2025-04-20' in result
+
+    def test_excluded_beta_filtered_from_full_agent(self):
+        body = {
+            'tools': [{'name': 'test'}],
+            'system': [{'type': 'text', 'text': 'hi'}],
+            'thinking': {'type': 'adaptive'},
+            'context_management': {'type': 'auto'},
+            'output_config': {'effort': 'high'},
+            'diagnostics': {'enabled': True},
+        }
+        result = select_betas(body, extra_betas=['context-1m-2025-08-07'])
+        assert 'context-1m-2025-08-07' not in result
+
 
 class TestBuildHeaders:
     def test_sets_bearer_auth(self):

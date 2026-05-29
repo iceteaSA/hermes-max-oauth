@@ -301,3 +301,55 @@ class TestActivate:
         hermes_max_patch._PATCHED = False
         hermes_max_patch.activate()
         assert hermes_max_patch._PATCHED
+
+
+class TestFinderUsesModernAPI:
+    """Guard against the Python 3.12+ regression where the legacy
+    find_module/load_module protocol is no longer consulted by the import
+    system. The finder MUST implement find_spec."""
+
+    def test_finder_implements_find_spec(self):
+        from hermes_max_patch import _HermesMaxFinder
+
+        finder = _HermesMaxFinder()
+        assert hasattr(finder, 'find_spec')
+        # Legacy hooks must be gone — relying on them silently no-ops on 3.12+.
+        assert not hasattr(finder, 'find_module')
+        assert not hasattr(finder, 'load_module')
+
+    def test_find_spec_ignores_other_modules(self):
+        from hermes_max_patch import _HermesMaxFinder
+
+        assert _HermesMaxFinder().find_spec('os', None) is None
+        assert _HermesMaxFinder().find_spec('some.random.module') is None
+
+    def test_find_spec_wraps_loader_for_target(self):
+        from hermes_max_patch import (
+            _HermesMaxFinder, _PatchingLoader,
+        )
+        from importlib.machinery import ModuleSpec
+        from unittest.mock import MagicMock, patch
+
+        real_loader = MagicMock()
+        fake_spec = ModuleSpec('agent.anthropic_adapter', real_loader)
+
+        # importlib.util.find_spec is called after self-removal from meta_path.
+        with patch('importlib.util.find_spec', return_value=fake_spec):
+            spec = _HermesMaxFinder().find_spec('agent.anthropic_adapter')
+
+        assert spec is not None
+        assert isinstance(spec.loader, _PatchingLoader)
+
+    def test_patching_loader_execs_then_patches(self):
+        from hermes_max_patch import _PatchingLoader
+        from unittest.mock import MagicMock, patch
+
+        real_loader = MagicMock()
+        module = MagicMock()
+        loader = _PatchingLoader(real_loader)
+
+        with patch('hermes_max_patch.apply_patches') as mock_apply:
+            loader.exec_module(module)
+
+        real_loader.exec_module.assert_called_once_with(module)
+        mock_apply.assert_called_once_with(module)

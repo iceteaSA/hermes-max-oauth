@@ -58,7 +58,9 @@ _config_cache: Optional[dict] = None
 def load_config(config_path: Optional[str] = None) -> dict:
     """Load sanitization config from JSON file."""
     global _config_cache
-    if _config_cache is not None and config_path is None:
+    # Only the default (no explicit path) lookup is cached.
+    use_cache = config_path is None
+    if _config_cache is not None and use_cache:
         return _config_cache
 
     if config_path is None:
@@ -73,7 +75,7 @@ def load_config(config_path: Optional[str] = None) -> dict:
     except (FileNotFoundError, json.JSONDecodeError):
         cfg = {}
 
-    if config_path is None:
+    if use_cache:
         _config_cache = cfg
     return cfg
 

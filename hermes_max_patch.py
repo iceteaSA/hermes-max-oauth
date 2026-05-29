@@ -18,9 +18,10 @@ Does NOT modify any hermes-agent source files.
 
 import functools
 import importlib
+import importlib.util
 import logging
 import sys
-from importlib.abc import MetaPathFinder
+from importlib.abc import Loader, MetaPathFinder
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +65,10 @@ def _patch_build_client(adapter):
     @functools.wraps(_original)
     def _patched(api_key, base_url=None, timeout=None, *,
                  drop_context_1m_beta=False):
-        # Non-OAuth or non-string: use original
+        # Non-OAuth, non-string, or callable (e.g. Entra ID bearer):
+        # use original. A str is never callable, so the callable case is
+        # already covered by the isinstance check.
         if not isinstance(api_key, str) or not adapter._is_oauth_token(api_key):
-            return _original(
-                api_key, base_url, timeout,
-                drop_context_1m_beta=drop_context_1m_beta,
-            )
-
-        # Callable api_key (Entra ID bearer): use original
-        if callable(api_key):
             return _original(
                 api_key, base_url, timeout,
                 drop_context_1m_beta=drop_context_1m_beta,
@@ -102,14 +98,17 @@ def _patch_build_client(adapter):
             )
 
         # ── OAuth on Anthropic endpoint → Max routing ──────────────
-        import httpx as _httpx
-
+        # Fail fast on a missing SDK before importing httpx, so the failure
+        # mode is the actionable "install anthropic" message rather than an
+        # incidental httpx ImportError.
         _sdk = adapter._get_anthropic_sdk()
         if _sdk is None:
             raise ImportError(
                 "The 'anthropic' package is required for OAuth. "
                 "Install with: pip install 'anthropic>=0.39.0'"
             )
+
+        import httpx as _httpx
 
         adapter.normalize_proxy_env_vars()
 
@@ -151,11 +150,12 @@ def _patch_build_client(adapter):
             else 900.0
         )
 
-        common_betas = adapter._common_betas_for_base_url(
-            normalized, drop_context_1m_beta=drop_context_1m_beta,
-        )
-        all_betas = common_betas + adapter._OAUTH_ONLY_BETAS
-
+        # NOTE: We intentionally do NOT seed default_headers['anthropic-beta'].
+        # The request hook (build_headers/select_betas) is the single source of
+        # truth for the beta set on Max OAuth requests. Seeding it here caused
+        # the hook to read those betas back as "incoming" and merge them in,
+        # which could reintroduce context-1m-2025-08-07 (rejected by the Max
+        # base allowance). select_betas owns the curated, deny-filtered list.
         client_kwargs = {
             'timeout': _httpx.Timeout(
                 timeout=float(_read_timeout), connect=10.0,
@@ -165,9 +165,6 @@ def _patch_build_client(adapter):
                 event_hooks={'request': [_max_request_hook]},
                 timeout=_httpx.Timeout(600.0, connect=30.0),
             ),
-            'default_headers': {
-                'anthropic-beta': ','.join(all_betas),
-            },
         }
         if normalized:
             client_kwargs['base_url'] = normalized
@@ -296,27 +293,62 @@ def apply_patches(adapter=None):
         logger.debug('hermes-max-oauth: patch failed', exc_info=True)
 
 
-class _HermesMaxFinder(MetaPathFinder):
-    """Intercepts agent.anthropic_adapter import to apply patches."""
+class _PatchingLoader(Loader):
+    """Wraps the real loader; applies patches after the module executes."""
 
-    def find_module(self, fullname, path=None):
-        if fullname == 'agent.anthropic_adapter':
-            return self
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        # Defer to the real loader's module creation (or default machinery).
+        if hasattr(self._loader, 'create_module'):
+            return self._loader.create_module(spec)
         return None
 
-    def load_module(self, fullname):
-        # Remove ourselves to avoid recursion
+    def exec_module(self, module):
+        # Run the real module body first, then patch the populated module.
+        self._loader.exec_module(module)
+        apply_patches(module)
+
+    def __getattr__(self, name):
+        # Proxy everything else (get_source, is_package, etc.) to the real loader.
+        return getattr(self._loader, name)
+
+
+class _HermesMaxFinder(MetaPathFinder):
+    """Intercepts agent.anthropic_adapter import to apply patches.
+
+    Uses the modern find_spec API (PEP 451). The legacy find_module/
+    load_module protocol was removed from the import system in Python 3.12,
+    so it must not be relied upon.
+    """
+
+    _TARGET = 'agent.anthropic_adapter'
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != self._TARGET:
+            return None
+
+        # Temporarily remove ourselves so downstream finders resolve the
+        # real module without re-entering this hook.
+        saved = [f for f in sys.meta_path if isinstance(f, _HermesMaxFinder)]
         sys.meta_path[:] = [
-            f for f in sys.meta_path
-            if not isinstance(f, _HermesMaxFinder)
+            f for f in sys.meta_path if not isinstance(f, _HermesMaxFinder)
         ]
-        # Let the real import happen
-        mod = importlib.import_module(fullname)
-        # Apply patches
-        apply_patches(mod)
-        # Re-register for reload scenarios
-        sys.meta_path.insert(0, _HermesMaxFinder())
-        return mod
+        try:
+            spec = importlib.util.find_spec(fullname)
+        except Exception:
+            spec = None
+        finally:
+            # Re-register for reload scenarios.
+            for f in saved:
+                sys.meta_path.insert(0, f)
+
+        if spec is None or spec.loader is None:
+            return None
+
+        spec.loader = _PatchingLoader(spec.loader)
+        return spec
 
 
 def activate():

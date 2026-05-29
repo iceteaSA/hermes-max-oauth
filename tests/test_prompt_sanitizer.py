@@ -111,3 +111,32 @@ class TestBuildSystemBlocks:
         full_text = ' '.join(b['text'] for b in blocks)
         assert 'Hermes Agent' not in full_text
         assert 'Nous Research' not in full_text
+
+
+class TestLoadConfigCache:
+    def test_default_path_populates_cache(self, tmp_path, monkeypatch):
+        import agent.prompt_sanitizer as ps
+
+        cfg_file = tmp_path / 'cfg.json'
+        cfg_file.write_text('{"sanitize": {"replacements": []}}')
+        monkeypatch.setenv('HERMES_MAX_CONFIG', str(cfg_file))
+
+        ps._config_cache = None
+        first = ps.load_config()
+        # Cache must be populated for the default (no-arg) lookup.
+        assert ps._config_cache is not None
+        # Second call returns the cached object (identity), no re-read.
+        second = ps.load_config()
+        assert first is second
+        assert first is ps._config_cache
+
+    def test_explicit_path_not_cached(self, tmp_path):
+        import agent.prompt_sanitizer as ps
+
+        cfg_file = tmp_path / 'cfg.json'
+        cfg_file.write_text('{"sanitize": {"replacements": []}}')
+
+        ps._config_cache = None
+        ps.load_config(str(cfg_file))
+        # Explicit path lookups must not poison the default cache.
+        assert ps._config_cache is None
